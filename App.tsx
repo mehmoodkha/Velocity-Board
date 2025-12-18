@@ -1,5 +1,5 @@
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
 import { 
   Users, 
   Flag, 
@@ -13,7 +13,11 @@ import {
   ChevronDown,
   History,
   Play,
-  Settings2
+  Settings2,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Plus
 } from 'lucide-react';
 import { Task, Status, Priority, GroupBy, SwimlaneData, Assignee, Sprint } from './types';
 import { INITIAL_TASKS, STATUS_CONFIG, ASSIGNEES, PRIORITY_CONFIG, INITIAL_SPRINTS } from './constants';
@@ -34,19 +38,37 @@ import Avatar from './components/Avatar';
 const COLUMNS: Status[] = ['TODO', 'IN_PROGRESS', 'REVIEW', 'DONE'];
 
 const App: React.FC = () => {
-  const [tasks, setTasks] = useState<Task[]>(INITIAL_TASKS);
-  const [assignees, setAssignees] = useState<Assignee[]>(ASSIGNEES);
-  const [sprints, setSprints] = useState<Sprint[]>(INITIAL_SPRINTS);
-  const [activeSprintId, setActiveSprintId] = useState<string>(
-    INITIAL_SPRINTS.find(s => s.status === 'ACTIVE')?.id || INITIAL_SPRINTS[0].id
-  );
+  // Initialize state from localStorage or defaults
+  const [tasks, setTasks] = useState<Task[]>(() => {
+    const saved = localStorage.getItem('velocity_tasks');
+    return saved ? JSON.parse(saved) : INITIAL_TASKS;
+  });
+
+  const [assignees, setAssignees] = useState<Assignee[]>(() => {
+    const saved = localStorage.getItem('velocity_assignees');
+    return saved ? JSON.parse(saved) : ASSIGNEES;
+  });
+
+  const [sprints, setSprints] = useState<Sprint[]>(() => {
+    const saved = localStorage.getItem('velocity_sprints');
+    return saved ? JSON.parse(saved) : INITIAL_SPRINTS;
+  });
+
+  const [activeSprintId, setActiveSprintId] = useState<string>(() => {
+    const saved = localStorage.getItem('velocity_active_sprint_id');
+    if (saved) return saved;
+    const active = INITIAL_SPRINTS.find(s => s.status === 'ACTIVE');
+    return active ? active.id : INITIAL_SPRINTS[0].id;
+  });
   
   const [groupBy, setGroupBy] = useState<GroupBy>('ASSIGNEE');
   const [currentUser, setCurrentUser] = useState<Assignee | null>(null);
+  const [notification, setNotification] = useState<{ message: string; type: 'error' | 'success' } | null>(null);
   
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isTeamModalOpen, setIsTeamModalOpen] = useState(false);
   const [isSprintModalOpen, setIsSprintModalOpen] = useState(false);
+  const [sprintModalCreateMode, setSprintModalCreateMode] = useState(false);
   const [isHelpModalOpen, setIsHelpModalOpen] = useState(false);
   const [isMilestonesModalOpen, setIsMilestonesModalOpen] = useState(false);
   const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
@@ -59,21 +81,43 @@ const App: React.FC = () => {
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [activeDropZone, setActiveDropZone] = useState<{status: Status, swimlaneId: string} | null>(null);
 
+  // Persistence Effects
+  useEffect(() => {
+    localStorage.setItem('velocity_tasks', JSON.stringify(tasks));
+  }, [tasks]);
+
+  useEffect(() => {
+    localStorage.setItem('velocity_assignees', JSON.stringify(assignees));
+  }, [assignees]);
+
+  useEffect(() => {
+    localStorage.setItem('velocity_sprints', JSON.stringify(sprints));
+  }, [sprints]);
+
+  useEffect(() => {
+    localStorage.setItem('velocity_active_sprint_id', activeSprintId);
+  }, [activeSprintId]);
+
   useEffect(() => {
     const savedUser = localStorage.getItem('velocity_user');
     if (savedUser) {
       try {
         const user = JSON.parse(savedUser);
-        setCurrentUser(user);
-        setIsAuthModalOpen(false);
+        const exists = assignees.find(a => a.id === user.id);
+        if (exists) {
+          setCurrentUser(exists);
+          setIsAuthModalOpen(false);
+        } else {
+          localStorage.removeItem('velocity_user');
+        }
       } catch (e) {
         localStorage.removeItem('velocity_user');
       }
     }
-  }, []);
+  }, [assignees]);
 
   const currentSprint = useMemo(() => 
-    sprints.find(s => s.id === activeSprintId) || sprints[0]
+    sprints.find(s => s.id === activeSprintId) || sprints[0] || INITIAL_SPRINTS[0]
   , [sprints, activeSprintId]);
 
   const handleLogin = (user: Assignee) => {
@@ -100,6 +144,96 @@ const App: React.FC = () => {
   const boardTasks = filteredTasks.filter(t => t.sprintId === activeSprintId && t.status !== 'DONE' && t.status !== 'BACKLOG');
   const completedTasks = filteredTasks.filter(t => t.sprintId === activeSprintId && t.status === 'DONE');
 
+  // Auto-clear notification
+  useEffect(() => {
+    if (notification) {
+      const timer = setTimeout(() => setNotification(null), 6000);
+      return () => clearTimeout(timer);
+    }
+  }, [notification]);
+
+  // Enhanced Close Sprint logic (Manual Closure Option)
+  const handleCloseSprint = useCallback((sprintId: string) => {
+    const sprintToClose = sprints.find(s => s.id === sprintId);
+    if (!sprintToClose) return;
+
+    // Find all tasks in this sprint that are NOT done
+    const unfinishedTasks = tasks.filter(t => t.sprintId === sprintId && t.status !== 'DONE');
+    
+    if (unfinishedTasks.length > 0) {
+      // Manual Closure Prompt: Offer to move unfinished tasks to backlog
+      if (window.confirm(`Sprint "${sprintToClose.name}" has ${unfinishedTasks.length} unfinished items. Move them to the Backlog and complete the sprint?`)) {
+        // Move tasks to backlog
+        setTasks(prevTasks => prevTasks.map(t => {
+          if (t.sprintId === sprintId && t.status !== 'DONE') {
+            return { ...t, sprintId: undefined, status: 'BACKLOG' as const, updatedAt: Date.now() };
+          }
+          return t;
+        }));
+      } else {
+        // User cancelled the operation
+        return;
+      }
+    } else {
+      // Standard confirmation for perfectly completed sprint
+      if (!window.confirm(`Complete and archive sprint "${sprintToClose.name}"?`)) return;
+    }
+
+    // Update the sprint status
+    setSprints(prevSprints => {
+      const nextSprints = prevSprints.map(s => 
+        s.id === sprintId ? { ...s, status: 'PAST' as const, endDate: Date.now() } : s
+      );
+
+      // Auto-switch view if we just closed the currently viewed one
+      if (activeSprintId === sprintId) {
+        const fallback = nextSprints.find(s => s.status === 'ACTIVE') || nextSprints.find(s => s.status === 'FUTURE');
+        if (fallback) {
+          setActiveSprintId(fallback.id);
+        }
+      }
+
+      return nextSprints;
+    });
+
+    setNotification({
+      message: `Sprint "${sprintToClose.name}" successfully archived. ${unfinishedTasks.length > 0 ? unfinishedTasks.length + ' items moved to backlog.' : ''}`,
+      type: 'success'
+    });
+  }, [sprints, tasks, activeSprintId]);
+
+  // Sprint Handlers
+  const handleAddSprint = (sprintData: Omit<Sprint, 'id'>) => {
+    const newSprint: Sprint = {
+      id: `sprint-${Date.now()}`,
+      ...sprintData
+    };
+    setSprints(prev => [...prev, newSprint]);
+    setNotification({ message: `Sprint "${newSprint.name}" created.`, type: 'success' });
+  };
+
+  const handleUpdateSprint = (id: string, updates: Partial<Sprint>) => {
+    if (updates.status === 'PAST') {
+      handleCloseSprint(id);
+    } else {
+      setSprints(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+    }
+  };
+
+  const handleDeleteSprint = (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this sprint? Associated tasks will be moved to the backlog.')) return;
+    
+    setSprints(prev => {
+      const filtered = prev.filter(s => s.id !== id);
+      if (activeSprintId === id) {
+        const next = filtered.find(s => s.status === 'ACTIVE') || filtered[0];
+        if (next) setActiveSprintId(next.id);
+      }
+      return filtered.length > 0 ? filtered : INITIAL_SPRINTS;
+    });
+    setTasks(prev => prev.map(t => t.sprintId === id ? { ...t, sprintId: undefined, status: 'BACKLOG' } : t));
+  };
+
   const swimlanes: SwimlaneData[] = useMemo(() => {
     if (groupBy === 'ASSIGNEE') {
       return assignees.map(a => ({ id: a.id, label: a.name }));
@@ -111,28 +245,6 @@ const App: React.FC = () => {
     }
   }, [groupBy, assignees]);
 
-  // Sprint Handlers
-  const handleAddSprint = (sprintData: Omit<Sprint, 'id'>) => {
-    const newSprint: Sprint = {
-      id: `sprint-${Date.now()}`,
-      ...sprintData
-    };
-    setSprints(prev => [...prev, newSprint]);
-  };
-
-  const handleUpdateSprint = (id: string, updates: Partial<Sprint>) => {
-    setSprints(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
-  };
-
-  const handleDeleteSprint = (id: string) => {
-    setSprints(prev => prev.filter(s => s.id !== id));
-    if (activeSprintId === id) {
-      const remaining = sprints.filter(s => s.id !== id);
-      if (remaining.length > 0) setActiveSprintId(remaining[0].id);
-    }
-    setTasks(prev => prev.map(t => t.sprintId === id ? { ...t, sprintId: undefined, status: 'BACKLOG' } : t));
-  };
-
   // Task Handlers
   const handleAddTask = (taskData: { title: string; assigneeId: string; priority: Priority; points: number }) => {
     const newTask: Task = {
@@ -141,7 +253,7 @@ const App: React.FC = () => {
       updatedAt: Date.now(),
       ...taskData
     };
-    setTasks([...tasks, newTask]);
+    setTasks(prev => [...prev, newTask]);
   };
 
   const handleUpdateTask = (taskId: string, updates: Partial<Task>) => {
@@ -161,7 +273,7 @@ const App: React.FC = () => {
       password,
       role
     };
-    setAssignees([...assignees, newAssignee]);
+    setAssignees(prev => [...prev, newAssignee]);
   };
 
   const handleUpdateAssignee = (id: string, updates: { name?: string; password?: string }) => {
@@ -177,15 +289,6 @@ const App: React.FC = () => {
       }
       return a;
     }));
-
-    if (currentUser?.id === id) {
-      const updatedUser = { ...currentUser, ...updates };
-      if (updates.name) {
-        updatedUser.avatar = `https://picsum.photos/seed/${updates.name}/100`;
-      }
-      setCurrentUser(updatedUser);
-      localStorage.setItem('velocity_user', JSON.stringify(updatedUser));
-    }
   };
 
   const handleDeleteAssignee = (id: string) => {
@@ -240,8 +343,34 @@ const App: React.FC = () => {
     setSelectedTask(task);
   };
 
+  const openCreateSprintModal = () => {
+    setSprintModalCreateMode(true);
+    setIsSprintModalOpen(true);
+  };
+
+  const openSprintManagementModal = () => {
+    setSprintModalCreateMode(false);
+    setIsSprintModalOpen(true);
+  };
+
   return (
     <div className="flex h-screen w-full bg-slate-50 select-none overflow-hidden font-sans">
+      {/* Global Notification Toast */}
+      {notification && (
+        <div className={`fixed top-8 left-1/2 -translate-x-1/2 z-[400] flex items-center gap-4 px-6 py-4 rounded-3xl shadow-2xl border transition-all duration-300 animate-in fade-in slide-in-from-top-10 ${
+          notification.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-emerald-50 border-emerald-200 text-emerald-800'
+        }`}>
+          {notification.type === 'error' ? <XCircle size={22} className="text-red-500" /> : <CheckCircle2 size={22} className="text-emerald-500" />}
+          <div className="flex flex-col min-w-[200px]">
+            <span className="text-sm font-black uppercase tracking-tight leading-none mb-1">{notification.type === 'error' ? 'Action Blocked' : 'Success'}</span>
+            <span className="text-sm opacity-90 leading-snug">{notification.message}</span>
+          </div>
+          <button onClick={() => setNotification(null)} className="ml-4 p-2 hover:bg-black/5 rounded-full transition-colors">
+            <MoreHorizontal size={18} />
+          </button>
+        </div>
+      )}
+
       {/* Navigation Rail */}
       <div className="w-16 flex-shrink-0 bg-slate-900 flex flex-col items-center py-6 gap-6 text-slate-400">
         <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white font-bold shadow-lg shadow-blue-500/20 mb-2">
@@ -260,7 +389,7 @@ const App: React.FC = () => {
           </div>
           <div 
             className="p-2 hover:bg-slate-800 rounded-lg cursor-pointer transition-colors"
-            onClick={() => setIsSprintModalOpen(true)}
+            onClick={openSprintManagementModal}
             title="Sprints & Release Management"
           >
             <Calendar size={22} />
@@ -302,7 +431,9 @@ const App: React.FC = () => {
       <SidebarLeft 
         tasks={backlogTasks} 
         assignees={assignees}
+        userRole={currentUser?.role}
         onAddTask={() => setIsCreateModalOpen(true)}
+        onCreateSprint={openCreateSprintModal}
         onDragStart={handleDragStart}
         onDrop={(e, status) => handleDrop(e, status)}
         onTaskClick={openTaskDetail}
@@ -334,7 +465,21 @@ const App: React.FC = () => {
                   <>
                     <div className="fixed inset-0 z-40" onClick={() => setIsSprintSelectOpen(false)} />
                     <div className="absolute top-full left-0 mt-2 w-72 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
-                      <div className="p-2 border-b bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Select Sprint</div>
+                      <div className="p-2 border-b bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center justify-between">
+                        <span>Select Sprint</span>
+                        {currentUser?.role === 'ADMIN' && (
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setIsSprintSelectOpen(false);
+                              openCreateSprintModal();
+                            }}
+                            className="flex items-center gap-1 text-blue-600 hover:text-blue-700"
+                          >
+                            <Plus size={12} /> New
+                          </button>
+                        )}
+                      </div>
                       <div className="max-h-64 overflow-y-auto custom-scrollbar">
                         {sprints.map(s => (
                           <button
@@ -363,7 +508,7 @@ const App: React.FC = () => {
                       <button 
                         onClick={() => {
                           setIsSprintSelectOpen(false);
-                          setIsSprintModalOpen(true);
+                          openSprintManagementModal();
                         }}
                         className="w-full py-3 bg-slate-50 text-indigo-600 text-xs font-bold flex items-center justify-center gap-2 hover:bg-indigo-50 transition-colors"
                       >
@@ -392,7 +537,7 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-end justify-between">
-            <div>
+            <div className="flex-1">
               <div className="flex items-center gap-3 mb-1">
                 <h1 className="text-2xl font-bold text-slate-900 tracking-tight">{currentSprint.name}</h1>
                 <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
@@ -408,18 +553,29 @@ const App: React.FC = () => {
               </p>
             </div>
             
-            <div className="flex items-center gap-4 bg-slate-50 p-2 rounded-lg border">
-              <div className="flex flex-col items-center px-3 border-r border-slate-200">
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Dates</span>
-                <span className="text-sm font-semibold">
-                  {new Date(currentSprint.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(currentSprint.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                </span>
-              </div>
-              <div className="flex flex-col items-center px-3">
-                <span className="text-[10px] font-bold text-slate-400 uppercase">Status</span>
-                <span className={`text-sm font-semibold ${currentSprint.status === 'ACTIVE' ? 'text-orange-600' : 'text-slate-500'}`}>
-                  {currentSprint.status === 'ACTIVE' ? 'In Progress' : currentSprint.status === 'PAST' ? 'Closed' : 'Upcoming'}
-                </span>
+            <div className="flex items-center gap-3">
+              {currentSprint.status === 'ACTIVE' && currentUser?.role === 'ADMIN' && (
+                <button 
+                  onClick={() => handleCloseSprint(currentSprint.id)}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-sm font-bold hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-100 active:scale-95"
+                >
+                  <CheckCircle2 size={18} /> Complete Sprint
+                </button>
+              )}
+              
+              <div className="flex items-center gap-4 bg-slate-50 p-2 rounded-lg border">
+                <div className="flex flex-col items-center px-3 border-r border-slate-200">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Dates</span>
+                  <span className="text-sm font-semibold">
+                    {new Date(currentSprint.startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(currentSprint.endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                  </span>
+                </div>
+                <div className="flex flex-col items-center px-3">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Status</span>
+                  <span className={`text-sm font-semibold ${currentSprint.status === 'ACTIVE' ? 'text-orange-600' : 'text-slate-500'}`}>
+                    {currentSprint.status === 'ACTIVE' ? 'In Progress' : currentSprint.status === 'PAST' ? 'Closed' : 'Upcoming'}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -574,7 +730,11 @@ const App: React.FC = () => {
 
       <SprintManagementModal
         isOpen={isSprintModalOpen}
-        onClose={() => setIsSprintModalOpen(false)}
+        initialCreateMode={sprintModalCreateMode}
+        onClose={() => {
+          setIsSprintModalOpen(false);
+          setSprintModalCreateMode(false);
+        }}
         sprints={sprints}
         userRole={currentUser?.role || 'USER'}
         onAddSprint={handleAddSprint}
