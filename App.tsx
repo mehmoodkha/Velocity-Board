@@ -17,7 +17,8 @@ import {
   CheckCircle2,
   AlertTriangle,
   XCircle,
-  Plus
+  Plus,
+  Check
 } from 'lucide-react';
 import { Task, Status, Priority, GroupBy, SwimlaneData, Assignee, Sprint } from './types';
 import { INITIAL_TASKS, STATUS_CONFIG, ASSIGNEES, PRIORITY_CONFIG, INITIAL_SPRINTS } from './constants';
@@ -75,9 +76,11 @@ const App: React.FC = () => {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(true);
   const [isSprintSelectOpen, setIsSprintSelectOpen] = useState(false);
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   
   const [searchQuery, setSearchQuery] = useState('');
+  const [filterPriority, setFilterPriority] = useState<Priority | 'ALL'>('ALL');
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [activeDropZone, setActiveDropZone] = useState<{status: Status, swimlaneId: string} | null>(null);
 
@@ -134,14 +137,15 @@ const App: React.FC = () => {
   };
 
   const filteredTasks = useMemo(() => {
-    return tasks.filter(t => 
-      t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      t.id.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [tasks, searchQuery]);
+    return tasks.filter(t => {
+      const matchesSearch = t.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                          t.id.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesPriority = filterPriority === 'ALL' || t.priority === filterPriority;
+      return matchesSearch && matchesPriority;
+    });
+  }, [tasks, searchQuery, filterPriority]);
 
   const backlogTasks = filteredTasks.filter(t => t.status === 'BACKLOG' || !t.sprintId);
-  const boardTasks = filteredTasks.filter(t => t.sprintId === activeSprintId && t.status !== 'DONE' && t.status !== 'BACKLOG');
   const completedTasks = filteredTasks.filter(t => t.sprintId === activeSprintId && t.status === 'DONE');
 
   // Auto-clear notification
@@ -157,13 +161,10 @@ const App: React.FC = () => {
     const sprintToClose = sprints.find(s => s.id === sprintId);
     if (!sprintToClose) return;
 
-    // Find all tasks in this sprint that are NOT done
     const unfinishedTasks = tasks.filter(t => t.sprintId === sprintId && t.status !== 'DONE');
     
     if (unfinishedTasks.length > 0) {
-      // Manual Closure Prompt: Offer to move unfinished tasks to backlog
       if (window.confirm(`Sprint "${sprintToClose.name}" has ${unfinishedTasks.length} unfinished items. Move them to the Backlog and complete the sprint?`)) {
-        // Move tasks to backlog
         setTasks(prevTasks => prevTasks.map(t => {
           if (t.sprintId === sprintId && t.status !== 'DONE') {
             return { ...t, sprintId: undefined, status: 'BACKLOG' as const, updatedAt: Date.now() };
@@ -171,21 +172,17 @@ const App: React.FC = () => {
           return t;
         }));
       } else {
-        // User cancelled the operation
         return;
       }
     } else {
-      // Standard confirmation for perfectly completed sprint
       if (!window.confirm(`Complete and archive sprint "${sprintToClose.name}"?`)) return;
     }
 
-    // Update the sprint status
     setSprints(prevSprints => {
       const nextSprints = prevSprints.map(s => 
         s.id === sprintId ? { ...s, status: 'PAST' as const, endDate: Date.now() } : s
       );
 
-      // Auto-switch view if we just closed the currently viewed one
       if (activeSprintId === sprintId) {
         const fallback = nextSprints.find(s => s.status === 'ACTIVE') || nextSprints.find(s => s.status === 'FUTURE');
         if (fallback) {
@@ -531,7 +528,37 @@ const App: React.FC = () => {
                   className="pl-9 pr-4 py-1.5 bg-slate-100 border-none rounded-full text-sm w-48 focus:w-64 focus:ring-2 focus:ring-blue-500 transition-all outline-none"
                 />
               </div>
-              <button className="p-2 hover:bg-slate-100 rounded-lg text-slate-600"><Filter size={20} /></button>
+              <div className="relative">
+                <button 
+                  onClick={() => setIsFilterOpen(!isFilterOpen)}
+                  className={`p-2 hover:bg-slate-100 rounded-lg transition-all ${filterPriority !== 'ALL' ? 'text-blue-600 bg-blue-50' : 'text-slate-600'}`}
+                >
+                  <Filter size={20} />
+                </button>
+                {isFilterOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setIsFilterOpen(false)} />
+                    <div className="absolute top-full right-0 mt-2 w-48 bg-white border border-slate-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+                      <div className="p-2 border-b bg-slate-50 text-[10px] font-bold text-slate-400 uppercase tracking-widest">Priority Filter</div>
+                      <div className="p-1">
+                        {['ALL', 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW'].map((p) => (
+                          <button
+                            key={p}
+                            onClick={() => {
+                              setFilterPriority(p as any);
+                              setIsFilterOpen(false);
+                            }}
+                            className="w-full flex items-center justify-between px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 rounded-lg"
+                          >
+                            <span>{p === 'ALL' ? 'All Priorities' : p}</span>
+                            {filterPriority === p && <Check size={14} className="text-blue-600" />}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
               <button className="p-2 hover:bg-slate-100 rounded-lg text-slate-600"><MoreHorizontal size={20} /></button>
             </div>
           </div>
@@ -614,7 +641,7 @@ const App: React.FC = () => {
                           {config.label}
                         </h3>
                         <span className="ml-auto text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded-full font-bold">
-                          {tasks.filter(t => t.sprintId === activeSprintId && t.status === status).length}
+                          {filteredTasks.filter(t => t.sprintId === activeSprintId && t.status === status).length}
                         </span>
                       </div>
                     </div>
@@ -630,13 +657,13 @@ const App: React.FC = () => {
                       <div className="flex flex-col">
                         <span className="text-sm font-bold text-slate-800 line-clamp-2 leading-tight">{lane.label}</span>
                         <span className="text-[10px] font-bold text-slate-400 uppercase mt-1">
-                          {tasks.filter(t => t.sprintId === activeSprintId && t.status !== 'DONE' && t.status !== 'BACKLOG' && (groupBy === 'ASSIGNEE' ? t.assigneeId === lane.id : t.priority === lane.id)).length} Issues
+                          {filteredTasks.filter(t => t.sprintId === activeSprintId && t.status !== 'DONE' && t.status !== 'BACKLOG' && (groupBy === 'ASSIGNEE' ? t.assigneeId === lane.id : t.priority === lane.id)).length} Issues
                         </span>
                       </div>
                     </div>
 
                     {COLUMNS.map(status => {
-                      const tasksInCell = tasks.filter(t => 
+                      const tasksInCell = filteredTasks.filter(t => 
                         t.sprintId === activeSprintId &&
                         t.status === status && 
                         (groupBy === 'ASSIGNEE' ? t.assigneeId === lane.id : t.priority === lane.id)
